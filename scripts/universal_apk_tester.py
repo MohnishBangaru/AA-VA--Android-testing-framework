@@ -81,6 +81,8 @@ class UniversalAPKTester:
         self.testing_completed = False
         # Track hash of last state screenshot to detect state changes
         self._last_screenshot_hash: str | None = None
+        # Track last screenshot path for Phi Ground
+        self._last_screenshot_path: str | None = None
         # Count only actions that cause a UI change
         self.changed_action_count = 0
         
@@ -1613,6 +1615,9 @@ class UniversalAPKTester:
             with open(screenshot_path, 'wb') as f:
                 f.write(result.stdout)
             
+            # Track last screenshot path for Phi Ground
+            self._last_screenshot_path = str(screenshot_path)
+            
             logger.info(f"✓ Screenshot saved successfully: {filename}")
             return str(screenshot_path)
             
@@ -1679,6 +1684,9 @@ class UniversalAPKTester:
                 # OPTIMIZATION 4: Save screenshot
                 with open(screenshot_path, 'wb') as f:
                     f.write(result.stdout)
+                
+                # Track last screenshot path for Phi Ground
+                self._last_screenshot_path = str(screenshot_path)
                 
                 logger.info(f"✓ Screenshot saved successfully: {filename}")
                 return str(screenshot_path)
@@ -1819,6 +1827,15 @@ class UniversalAPKTester:
             (action_type, action_description, element_id, screenshot_paths)
 
         """
+        # Try Phi Ground first if available
+        phi_ground_action = self._try_phi_ground_action()
+        if phi_ground_action:
+            logger.info("Using Phi Ground generated action")
+            return phi_ground_action
+        
+        # Fallback to random actions if Phi Ground is not available
+        logger.info("Using random action (Phi Ground not available)")
+        
         # Enhanced action set with more meaningful interactions
         actions = [
             # High-impact actions that create meaningful state changes
@@ -1984,6 +2001,80 @@ class UniversalAPKTester:
             logger.warning(f"Action failed: {e}")
         
         return action_type, description, element_id, screenshot_paths
+    
+    def _try_phi_ground_action(self) -> Optional[Tuple[str, str, str, List[str]]]:
+        """Try to generate action using Phi Ground.
+        
+        Returns
+        -------
+        Optional[Tuple[str, str, str, List[str]]]
+            (action_type, action_description, element_id, screenshot_paths) or None if Phi Ground fails
+        """
+        try:
+            # Check if Phi Ground is enabled
+            from src.core.config import config
+            if not config.use_phi_ground:
+                return None
+            
+            # Check if we have a recent screenshot
+            if not hasattr(self, '_last_screenshot_path') or not self._last_screenshot_path:
+                return None
+            
+            # Import Phi Ground
+            from src.ai.phi_ground import get_phi_ground_generator
+            from src.vision.models import UIElement, BoundingBox
+            
+            # Get Phi Ground generator
+            phi_ground = get_phi_ground_generator()
+            
+            # Create sample UI elements (in a real scenario, these would come from vision analysis)
+            # For now, we'll create some basic elements based on common UI patterns
+            ui_elements = [
+                UIElement(
+                    bbox=BoundingBox(100, 200, 300, 250),
+                    text="Login",
+                    confidence=0.9,
+                    element_type="button"
+                ),
+                UIElement(
+                    bbox=BoundingBox(100, 300, 400, 350),
+                    text="Email",
+                    confidence=0.8,
+                    element_type="input"
+                ),
+                UIElement(
+                    bbox=BoundingBox(100, 400, 400, 450),
+                    text="Password",
+                    confidence=0.8,
+                    element_type="input"
+                )
+            ]
+            
+            # Task description based on current app state
+            task_description = f"Explore and interact with {self.app_name} app"
+            
+            # Action history (simplified)
+            action_history = []
+            
+            # Generate action using Phi Ground
+            import asyncio
+            action = asyncio.run(phi_ground.generate_touch_action(
+                self._last_screenshot_path, task_description, action_history, ui_elements
+            ))
+            
+            if action:
+                action_type = action.get("type", "tap")
+                reasoning = action.get("reasoning", "Phi Ground generated")
+                element_id = f"phi_ground_{action_type}"
+                
+                # Convert to the expected format
+                return action_type, reasoning, element_id, []
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Phi Ground action generation failed: {e}")
+            return None
     
     def analyze_screenshot_with_optimized_timing(self, screenshot_path: str) -> List[Dict]:
         """Analyze screenshot with optimized timing to minimize foreground issues.
@@ -2626,10 +2717,10 @@ def main():
     
     if success:
         if tester.generate_reports:
-        report_path = tester.generate_final_report()
-        logger.info("🎉 Universal APK testing completed successfully!")
-        logger.info(f"📊 Final report available at: {report_path}")
-        logger.info(f"📋 Analysis data: {tester.output_dir}/analysis_data.json")
+            report_path = tester.generate_final_report()
+            logger.info("🎉 Universal APK testing completed successfully!")
+            logger.info(f"📊 Final report available at: {report_path}")
+            logger.info(f"📋 Analysis data: {tester.output_dir}/analysis_data.json")
         else:
             logger.info("🎉 Universal APK testing completed successfully (report generation disabled)!")
         logger.info(f"📸 Screenshots: {tester.screenshots_dir}")

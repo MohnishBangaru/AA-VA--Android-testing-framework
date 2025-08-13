@@ -215,12 +215,12 @@ class AppForegroundRecoveryManager:
             for activity in candidate_activities:
                 try:
                     log.info(f"Quick recovery: trying {activity}")
-            self.device_manager.device.shell(f"am start -n {activity}")
-            await asyncio.sleep(0.2)
-            
+                    self.device_manager.device.shell(f"am start -n {activity}")
+                    await asyncio.sleep(0.2)
+                    
                     if await self._is_app_foreground():
-                log.success(f"Quick recovery successful with {activity}")
-                return True
+                        log.success(f"Quick recovery successful with {activity}")
+                        return True
                 except Exception as e:
                     log.debug(f"Activity {activity} failed: {e}")
                     continue

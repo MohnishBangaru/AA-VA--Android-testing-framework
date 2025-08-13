@@ -12,6 +12,7 @@ from enum import Enum
 
 from ..core.logger import log
 from ..core.popup_classifier import get_popup_classifier, PopupAction
+from ..ai.phi_ground import get_phi_ground_generator
 
 
 class ActionType(Enum):
@@ -74,6 +75,8 @@ class ActionPrioritizer:
     
     def __init__(self):
         """Initialize the action prioritizer."""
+        self._phi_ground_generator = None
+        
         # Text input field keywords
         self.text_input_keywords = {
             "email": ElementCategory.EMAIL_INPUT,
@@ -644,13 +647,127 @@ class ActionPrioritizer:
         
         return final_score
 
+    def _try_phi_ground_action(
+        self,
+        screenshot_path: str,
+        task_description: str,
+        action_history: List[Dict[str, Any]],
+        ui_elements: List[Dict[str, Any]]
+    ) -> Optional[PrioritizedAction]:
+        """Try to generate action using Phi Ground.
+        
+        Args:
+            screenshot_path: Path to the screenshot
+            task_description: Current automation task
+            action_history: Previous actions performed
+            ui_elements: Detected UI elements for validation
+            
+        Returns:
+            Phi Ground generated action or None
+        """
+        try:
+            if self._phi_ground_generator is None:
+                self._phi_ground_generator = get_phi_ground_generator()
+            
+            # Convert UI elements to UIElement objects for Phi Ground
+            from ..vision.models import UIElement, BoundingBox
+            ui_element_objects = []
+            for element in ui_elements:
+                bounds = element.get('bounds', {})
+                bbox = BoundingBox(
+                    left=bounds.get('x', 0),
+                    top=bounds.get('y', 0),
+                    right=bounds.get('x2', 0),
+                    bottom=bounds.get('y2', 0)
+                )
+                ui_element_objects.append(UIElement(
+                    bbox=bbox,
+                    text=element.get('text', ''),
+                    confidence=element.get('confidence', 0.5),
+                    element_type=element.get('element_type', 'text')
+                ))
+            
+            # Generate action using Phi Ground
+            import asyncio
+            action = asyncio.run(self._phi_ground_generator.generate_touch_action(
+                screenshot_path, task_description, action_history, ui_element_objects
+            ))
+            
+            if action:
+                # Validate action coordinates
+                if not self._phi_ground_generator.validate_action_coordinates(action):
+                    log.warning("Phi Ground generated invalid coordinates, falling back to traditional method")
+                    return None
+                
+                # Check confidence threshold
+                confidence = action.get("confidence", 0.5)
+                if confidence < 0.5:  # Default threshold
+                    log.warning(f"Phi Ground confidence too low ({confidence:.2f}), falling back to traditional method")
+                    return None
+                
+                # Convert to PrioritizedAction
+                action_type = self._convert_action_type(action.get("type", ""))
+                category = self._classify_element_category(action)
+                
+                prioritized_action = PrioritizedAction(
+                    action_type=action_type,
+                    element=action,
+                    score=confidence * 100,  # Use confidence as base score
+                    reasoning=action.get("reasoning", "Phi Ground generated"),
+                    category=category,
+                    llm_confidence=confidence,
+                    vision_confidence=confidence,
+                    exploration_bonus=0.0
+                )
+                
+                log.info(f"Phi Ground generated action: {action['type']} with confidence {confidence:.2f}")
+                return prioritized_action
+            
+            return None
+            
+        except Exception as e:
+            log.warning(f"Phi Ground action generation failed: {e}")
+            return None
+    
+    def _convert_action_type(self, action_type: str) -> ActionType:
+        """Convert action type string to ActionType enum."""
+        if action_type == "text_input":
+            return ActionType.SET_TEXT
+        elif action_type == "tap":
+            return ActionType.TAP_PRIMARY
+        elif action_type == "swipe":
+            return ActionType.SCROLL
+        else:
+            return ActionType.TAP_NAVIGATION
+    
+    def _classify_element_category(self, action: Dict[str, Any]) -> ElementCategory:
+        """Classify element category based on action."""
+        element_text = action.get("element_text", "").lower()
+        
+        # Check for input fields
+        for keyword, category in self.text_input_keywords.items():
+            if keyword in element_text:
+                return category
+        
+        # Check for primary actions
+        if any(keyword in element_text for keyword in self.primary_action_keywords):
+            return ElementCategory.PRIMARY_BUTTON
+        
+        # Check for forwarding actions
+        if any(keyword in element_text for keyword in self.forwarding_keywords):
+            return ElementCategory.FORWARDING_BUTTON
+        
+        # Default
+        return ElementCategory.GENERAL_BUTTON
+
     def get_optimal_action(
         self,
         ui_elements: List[Dict[str, Any]],
         llm_analysis: Optional[Dict[str, Any]] = None,
         vision_analysis: Optional[Dict[str, Any]] = None,
         task_description: str = "",
-        action_history: Optional[List[Dict[str, Any]]] = None
+        action_history: Optional[List[Dict[str, Any]]] = None,
+        screenshot_path: Optional[str] = None
     ) -> Optional[PrioritizedAction]:
         """Get the optimal action based on all inputs.
         
@@ -660,10 +777,20 @@ class ActionPrioritizer:
             vision_analysis: Vision analysis results
             task_description: Current task description
             action_history: History of previous actions
+            screenshot_path: Path to current screenshot for Phi Ground
             
         Returns:
             Optimal action or None if no actions available
         """
+        # Try Phi Ground first if enabled and screenshot is available
+        if screenshot_path:
+            phi_ground_action = self._try_phi_ground_action(
+                screenshot_path, task_description, action_history or [], ui_elements
+            )
+            if phi_ground_action:
+                log.info("Using Phi Ground generated action")
+                return phi_ground_action
+        
         prioritized_actions = self.prioritize_actions(
             ui_elements, llm_analysis, vision_analysis, task_description, action_history
         )

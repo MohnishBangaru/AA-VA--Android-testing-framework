@@ -24,6 +24,7 @@ from ..core.state_tracker import get_state_tracker
 from ..vision.models import UIElement
 from .openai_client import get_openai_client
 from .prompt_builder import build_element_detection_prompt, build_context_analysis_prompt
+from .phi_ground import get_phi_ground_generator
 
 
 class EnhancedActionDeterminer:
@@ -32,6 +33,7 @@ class EnhancedActionDeterminer:
     def __init__(self) -> None:
         """Initialize the enhanced action determiner."""
         self._openai_client = None
+        self._phi_ground_generator = None
         self._element_tracker = get_element_tracker()
         self._state_tracker = get_state_tracker()
         self._text_input_patterns = [
@@ -77,7 +79,8 @@ class EnhancedActionDeterminer:
         ui_elements: list[UIElement],
         task_description: str,
         action_history: list[dict[str, Any]],
-        device_info: dict[str, Any]
+        device_info: dict[str, Any],
+        screenshot_path: Optional[str] = None
     ) -> Optional[dict[str, Any]]:
         """Determine the next action based on current UI state and task with enhanced analysis.
         
@@ -86,11 +89,21 @@ class EnhancedActionDeterminer:
             task_description: Current automation task
             action_history: Previous actions performed
             device_info: Device information
+            screenshot_path: Path to current screenshot for Phi Ground
             
         Returns:
             Action dictionary or None if no action needed
         """
         try:
+            # Try Phi Ground first if enabled and screenshot is available
+            if config.use_phi_ground and screenshot_path:
+                phi_ground_action = await self._try_phi_ground_action(
+                    screenshot_path, task_description, action_history, ui_elements
+                )
+                if phi_ground_action:
+                    logger.info("Using Phi Ground generated action")
+                    return phi_ground_action
+            
             # Enhanced element analysis using LLM
             element_analysis = await self._analyze_elements_with_llm(
                 ui_elements, task_description, action_history
@@ -767,6 +780,54 @@ class EnhancedActionDeterminer:
     def set_state_similarity_threshold(self, threshold: float) -> None:
         """Set state similarity threshold."""
         self._state_tracker.set_similarity_threshold(threshold)
+    
+    async def _try_phi_ground_action(
+        self,
+        screenshot_path: str,
+        task_description: str,
+        action_history: list[dict[str, Any]],
+        ui_elements: list[UIElement]
+    ) -> Optional[dict[str, Any]]:
+        """Try to generate action using Phi Ground.
+        
+        Args:
+            screenshot_path: Path to the screenshot
+            task_description: Current automation task
+            action_history: Previous actions performed
+            ui_elements: Detected UI elements for validation
+            
+        Returns:
+            Phi Ground generated action or None
+        """
+        try:
+            if self._phi_ground_generator is None:
+                self._phi_ground_generator = get_phi_ground_generator()
+            
+            # Generate action using Phi Ground
+            action = await self._phi_ground_generator.generate_touch_action(
+                screenshot_path, task_description, action_history, ui_elements
+            )
+            
+            if action:
+                # Validate action coordinates
+                if not self._phi_ground_generator.validate_action_coordinates(action):
+                    logger.warning("Phi Ground generated invalid coordinates, falling back to traditional method")
+                    return None
+                
+                # Check confidence threshold
+                confidence = action.get("confidence", 0.5)
+                if confidence < config.phi_ground_confidence_threshold:
+                    logger.warning(f"Phi Ground confidence too low ({confidence:.2f}), falling back to traditional method")
+                    return None
+                
+                logger.info(f"Phi Ground generated action: {action['type']} with confidence {confidence:.2f}")
+                return action
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Phi Ground action generation failed: {e}")
+            return None
 
 
 # Global instance for reuse

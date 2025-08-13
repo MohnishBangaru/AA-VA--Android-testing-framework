@@ -19,6 +19,13 @@ class Config(BaseSettings):
     openai_max_tokens: int = Field(default=2000)
     openai_temperature: float = Field(default=0.7)
 
+    # Phi Ground Configuration
+    use_phi_ground: bool = Field(default=True, description="Enable Phi Ground for action generation")
+    phi_ground_model: str = Field(default="microsoft/Phi-3-vision-128k-instruct", description="Phi Ground model to use")
+    phi_ground_temperature: float = Field(default=0.7, description="Temperature for Phi Ground generation")
+    phi_ground_max_tokens: int = Field(default=256, description="Max tokens for Phi Ground generation")
+    phi_ground_confidence_threshold: float = Field(default=0.5, description="Minimum confidence for Phi Ground actions")
+
     # Prompt parameters
     prompt_max_ui_elements: int = Field(default=20)
     prompt_max_history: int = Field(default=10)

@@ -391,12 +391,19 @@ class DroidBotGPT:
             from src.core.action_prioritizer import get_action_prioritizer
             
             prioritizer = get_action_prioritizer()
+            
+            # Get current screenshot path for Phi Ground
+            screenshot_path = None
+            if self.current_task and "current_screenshot" in self.current_task:
+                screenshot_path = self.current_task["current_screenshot"]
+            
             optimal_action = prioritizer.get_optimal_action(
                 ui_elements=ui_elements,
                 llm_analysis=llm_analysis,
                 vision_analysis=vision_analysis,
                 task_description=task_description,
-                action_history=action_history
+                action_history=action_history,
+                screenshot_path=screenshot_path
             )
             
             if optimal_action:
